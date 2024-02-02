@@ -3,32 +3,36 @@ import {
     ChapterDetails,
     ContentRating,
     HomeSection,
+    LanguageCode,
     Manga,
     MangaStatus,
     MangaTile,
     MangaUpdates,
     PagedResults,
-    Request,
-    RequestInterceptor,
-    Response,
+    // Request,
+    // RequestInterceptor,
     SearchRequest,
     Section,
     Source,
     SourceInfo,
-    SourceStateManager,
+    // SourceStateManager,
     TagSection,
     TagType,
 } from "paperback-extensions-common";
 
-import {parseLangCode} from "./Languages";
-
-import {resetSettingsButton, serverSettingsMenu, testServerSettingsMenu,} from "./Settings";
+import { parseLangCode } from "./Languages";
 
 import {
-    getAuthorizationString,
-    getKomgaAPI,
-    getOptions,
+    resetSettingsButton,
+    serverSettingsMenu,
+    testServerSettingsMenu,
+} from "./Settings";
+
+import {
+    capitalize,
+    getHchanUrl,
     getServerUnavailableMangaTiles,
+    parseTagSection,
     searchRequest,
 } from "./Common";
 
@@ -50,17 +54,17 @@ import {
 //  - search method which is called even if the user search in an other source
 
 export const PaperbackInfo: SourceInfo = {
-    version: "1.2.10",
-    name: "Paperback",
+    version: "0.0.1",
+    name: "Хентай-тян",
     icon: "icon.png",
-    author: "Lemon | Faizan Durrani",
+    author: "NN",
     authorWebsite: "https://github.com/FramboisePi",
-    description: "Komga client extension for Paperback",
-    contentRating: ContentRating.EVERYONE,
-    websiteBaseURL: "https://komga.org",
+    description: "Клиент для Хентай-тян",
+    contentRating: ContentRating.ADULT,
+    websiteBaseURL: "https://hentaichan.live/",
     sourceTags: [
         {
-            text: "Self hosted",
+            text: "Обычно лежит как сука",
             type: TagType.RED,
         },
     ],
@@ -77,88 +81,18 @@ const SUPPORTED_IMAGE_TYPES = [
 // Number of items requested for paged requests
 const PAGE_SIZE = 40;
 
-export const parseMangaStatus = (komgaStatus: string): MangaStatus => {
-    switch (komgaStatus) {
-        case "ENDED":
-            return MangaStatus.COMPLETED;
-        case "ONGOING":
-            return MangaStatus.ONGOING;
-        case "ABANDONED":
-            return MangaStatus.ONGOING;
-        case "HIATUS":
-            return MangaStatus.ONGOING;
-    }
-    return MangaStatus.ONGOING;
-};
-
-export const capitalize = (tag: string): string => {
-    return tag.replace(/^\w/, (c) => c.toUpperCase());
-};
-
-export class KomgaRequestInterceptor implements RequestInterceptor {
-    /*
-        Requests made to Komga must use a Basic Authentication.
-        This interceptor adds an authorization header to the requests.
-
-        NOTE: The authorization header can be overridden by the request
-        */
-
-    stateManager: SourceStateManager;
-    constructor(stateManager: SourceStateManager) {
-        this.stateManager = stateManager;
-    }
-
-    async interceptResponse(response: Response): Promise<Response> {
-        return response;
-    }
-
-    async interceptRequest(request: Request): Promise<Request> {
-        // NOTE: Doing it like this will make downloads work tried every other method did not work, if there is a better method make edit it and make pull request
-
-        if(request.url.includes('intercept*')){
-            const url = request?.url?.split('*').pop() ?? ''
-            
-            request.headers = {
-                'authorization': await getAuthorizationString(this.stateManager)
-            }
-
-            request.url = url
-
-            return request
-        }
-
-        if (request.headers === undefined) {
-            request.headers = {};
-        }
-
-        // We mustn't call this.getAuthorizationString() for the stateful submission request.
-        // This procedure indeed catchs the request used to check user credentials
-        // which can happen before an authorizationString is saved,
-        // raising an error in getAuthorizationString when we check for its existence
-        // Thus we only inject an authorizationString if none are defined in the request
-        if (request.headers.authorization === undefined) {
-            request.headers.authorization = await getAuthorizationString(
-                this.stateManager
-            );
-        }
-
-        return request;
-    }
-}
-
 export class Paperback extends Source {
     stateManager = createSourceStateManager({});
 
     requestManager = createRequestManager({
         requestsPerSecond: 4,
-        requestTimeout: 20000,
-        interceptor: new KomgaRequestInterceptor(this.stateManager),
+        requestTimeout: 35000,
     });
 
     override async getSourceMenu(): Promise<Section> {
         return createSection({
             id: "main",
-            header: "Source Settings",
+            header: "Настройки Хентай-тян",
             rows: async () => [
                 serverSettingsMenu(this.stateManager),
                 testServerSettingsMenu(this.stateManager, this.requestManager),
@@ -167,7 +101,15 @@ export class Paperback extends Source {
         });
     }
 
-    override async getTags(): Promise<TagSection[]> {
+    override async supportsTagExclusion(): Promise<boolean> {
+        return true;
+    }
+
+    override getMangaShareUrl(mangaId: string): string {
+        return `https://hentaichan.live/manga/${mangaId}.html`;
+    }
+
+    override async getSearchTags(): Promise<TagSection[]> {
         // This function is called on the homepage and should not throw if the server is unavailable
 
         // We define four types of tags:
@@ -177,154 +119,238 @@ export class Paperback extends Source {
         // - `library`
         // To be able to make the difference between theses types, we append `genre-` or `tag-` at the beginning of the tag id
 
-        let genresResponse: Response,
-            tagsResponse: Response,
-            collectionResponse: Response,
-            libraryResponse: Response;
+        // let response: Response;
 
         // We try to make the requests. If this fail, we return a placeholder tags list to inform the user and prevent the function from throwing an error
-        try {
-            const komgaAPI = await getKomgaAPI(this.stateManager);
+        // try {
+        //     const hchanUrl = await getHchanUrl(this.stateManager);
 
-            const genresRequest = createRequestObject({
-                url: `${komgaAPI}/genres`,
-                method: "GET",
-            });
-            genresResponse = await this.requestManager.schedule(genresRequest, 1);
-
-            const tagsRequest = createRequestObject({
-                url: `${komgaAPI}/tags/series`,
-                method: "GET",
-            });
-            tagsResponse = await this.requestManager.schedule(tagsRequest, 1);
-
-            const collectionRequest = createRequestObject({
-                url: `${komgaAPI}/collections`,
-                method: "GET",
-            });
-            collectionResponse = await this.requestManager.schedule(collectionRequest, 1);
-
-            const libraryRequest = createRequestObject({
-                url: `${komgaAPI}/libraries`,
-                method: "GET",
-            });
-            libraryResponse = await this.requestManager.schedule(libraryRequest, 1);
-        } catch (error) {
-            console.log(`getTags failed with error: ${error}`);
-            return [
-                createTagSection({ id: "-1", label: "Server unavailable", tags: [] }),
-            ];
-        }
+        //     const request = createRequestObject({
+        //         url: `${hchanUrl}/manga`,
+        //         method: "GET",
+        //     });
+        //     response = await this.requestManager.schedule(request, 1);
+        // } catch (error) {
+        //     console.error(`getTags failed with error: ${error}`);
+        //     return [
+        //         createTagSection({
+        //             id: "-1",
+        //             label: "Server unavailable",
+        //             tags: [],
+        //         }),
+        //     ];
+        // }
 
         // The following part of the function should throw if there is an error and thus is not in the try/catch block
+        // const $ = this.cheerio.load(response.data);
+        // const parsedTags = $("li.sidetag")
+        //     .toArray()
+        //     .map((el) => $("a:nth-child(3)", el).text().trim());
 
-        const genresResult =
-            typeof genresResponse.data === "string"
-                ? JSON.parse(genresResponse.data)
-                : genresResponse.data;
+        const tagSection = createTagSection({
+            id: "0",
+            label: "Тэги",
+            tags: [],
+        });
 
-        const tagsResult =
-            typeof tagsResponse.data === "string"
-                ? JSON.parse(tagsResponse.data)
-                : tagsResponse.data;
-
-        const collectionResult =
-            typeof collectionResponse.data === "string"
-                ? JSON.parse(collectionResponse.data)
-                : collectionResponse.data;
-
-        const libraryResult =
-            typeof libraryResponse.data === "string"
-                ? JSON.parse(libraryResponse.data)
-                : libraryResponse.data;
-
-        const tagSections: [TagSection, TagSection, TagSection, TagSection] = [
-            createTagSection({ id: "0", label: "genres", tags: [] }),
-            createTagSection({ id: "1", label: "tags", tags: [] }),
-            createTagSection({ id: "2", label: "collections", tags: [] }),
-            createTagSection({ id: "3", label: "libraries", tags: [] }),
+        // уже полученные теги. получать новые слишком долго
+        const parsedTags = [
+            "3D",
+            "3DCG",
+            "ahegao",
+            "foot fetish",
+            "footfuck",
+            "lolcon",
+            "megane",
+            "mind break",
+            "monstergirl",
+            "paizuri (titsfuck)",
+            "x-ray",
+            "алкоголь",
+            "анал",
+            "анилингус",
+            "без текста",
+            "без трусиков",
+            "без цензуры",
+            "беременность",
+            "бикини",
+            "большая грудь",
+            "большие попки",
+            "в общественном месте",
+            "в первый раз",
+            "в цвете",
+            "в школе",
+            "веб",
+            "волосатые женщины",
+            "гаремник",
+            "гг девушка",
+            "гг парень",
+            "гипноз",
+            "глубокий минет",
+            "групповой секс",
+            "гяру и гангуро",
+            "двойное проникновение",
+            "демоны",
+            "дилдо",
+            "драма",
+            "за деньги",
+            "зрелые женщины",
+            "измена",
+            "изнасилование",
+            "инопланетяне",
+            "исполнение желаний",
+            "камера",
+            "кимоно",
+            "колготки",
+            "комиксы",
+            "косплей",
+            "кремпай",
+            "куннилингус",
+            "маленькая грудь",
+            "мастурбация",
+            "минет",
+            "молоко",
+            "монстры",
+            "мужчина крепкого телосложения",
+            "мускулистые женщины",
+            "на природе",
+            "обычный секс",
+            "огромная грудь",
+            "огромный член",
+            "оплодотворение",
+            "остановка времени",
+            "парень пассив",
+            "пляж",
+            "подглядывание",
+            "подчинение",
+            "презерватив",
+            "принуждение",
+            "прозрачная одежда",
+            "проникновение в матку",
+            "психические отклонения",
+            "рабыни",
+            "романтика",
+            "секс игрушки",
+            "сетакон",
+            "скрытный секс",
+            "страпон",
+            "суккубы",
+            "темнокожие",
+            "тентакли",
+            "трап",
+            "умеренная жестокость",
+            "учитель и ученик",
+            "ушастые",
+            "фантастика",
+            "фемдом",
+            "фетиш",
+            "фурри",
+            "футанари",
+            "фэнтези",
+            "чулки",
+            "школьная форма",
+            "школьники",
+            "школьницы",
+            "школьный купальник",
+            "эччи",
+            "юмор",
+            "юри",
+            "яой",
         ];
 
         // For each tag, we append a type identifier to its id and capitalize its label
-        tagSections[0].tags = genresResult.map((elem: string) =>
-            createTag({ id: "genre-" + elem, label: capitalize(elem) })
-        );
-        tagSections[1].tags = tagsResult.map((elem: string) =>
-            createTag({ id: "tag-" + elem, label: capitalize(elem) })
-        );
-        tagSections[2].tags = collectionResult.content.map((elem: { name: string; id: string; }) =>
-            createTag({id: "collection-" + elem.id, label: capitalize(elem.name)})
-        );
-        tagSections[3].tags = libraryResult.map((elem: { name: string; id: string; }) =>
-            createTag({ id: "library-" + elem.id, label: capitalize(elem.name) })
+        tagSection.tags = parsedTags.map((elem: string) =>
+            createTag({
+                id: elem.replaceAll(" ", "_"),
+                label: capitalize(elem),
+            })
         );
 
-        if (collectionResult.content.length <= 1) {
-            tagSections.splice(2, 1);
-        }
-
-        return tagSections;
+        return [tagSection];
     }
 
     async getMangaDetails(mangaId: string): Promise<Manga> {
-        /*
-                In Komga a manga is represented by a `serie`
-                */
-        const komgaAPI = await getKomgaAPI(this.stateManager);
+        const hchanUrl = await getHchanUrl(this.stateManager);
 
         const request = createRequestObject({
-            url: `${komgaAPI}/series/${mangaId}`,
+            url: `${hchanUrl}/manga/${mangaId}.html`,
             method: "GET",
         });
 
         const response = await this.requestManager.schedule(request, 1);
-        const result =
-            typeof response.data === "string"
-                ? JSON.parse(response.data)
-                : response.data;
+        const $ = this.cheerio.load(response.data);
 
-        const metadata = result.metadata;
-        const booksMetadata = result.booksMetadata;
-
-        const tagSections: [TagSection, TagSection] = [
-            createTagSection({ id: "0", label: "genres", tags: [] }),
-            createTagSection({ id: "1", label: "tags", tags: [] }),
-        ];
-        // For each tag, we append a type identifier to its id and capitalize its label
-        tagSections[0].tags = metadata.genres.map((elem: string) =>
-            createTag({ id: "genre-" + elem, label: capitalize(elem) })
-        );
-        tagSections[1].tags = metadata.tags.map((elem: string) =>
-            createTag({ id: "tag-" + elem, label: capitalize(elem) })
-        );
+        const tagSection = createTagSection({
+            id: "0",
+            label: "Тэги",
+            tags: [],
+        });
+        tagSection.tags = parseTagSection($);
 
         const authors: string[] = [];
         const artists: string[] = [];
 
-        // Additional roles: colorist, inker, letterer, cover, editor
-        for (const entry of booksMetadata.authors) {
-            if (entry.role === "writer") {
-                authors.push(entry.name);
+        const infoEl = $("#info_wrap");
+        const title = $("div:nth-child(1) > div > h1 > a", infoEl)
+            .text()
+            .trim();
+
+        $("div.row", infoEl)
+            .toArray()
+            .forEach((el) => {
+                const label = $("div.item", el).text().trim();
+                const value = $("div.item2", el).text().trim();
+
+                switch (label) {
+                    case "Автор":
+                        authors.push(value);
+                        break;
+                    case "Переводчик":
+                        artists.push(value);
+                        break;
+                    case "Аниме/манга":
+                    case "Язык":
+                        break;
+                }
+            });
+
+        let views, follows: number | undefined;
+
+        const stats = $("div.row5", infoEl).text().split(",");
+        if (stats.length == 3) {
+            const viewsStat = stats[0]!!.split(": ").pop();
+            if (viewsStat) {
+                views = parseInt(viewsStat);
             }
-            if (entry.role === "penciller") {
-                artists.push(entry.name);
+
+            const downloadsStat = stats[1]!!.split(": ").pop();
+            if (downloadsStat) {
+                follows = parseInt(downloadsStat);
             }
         }
 
+        const image = $("#cover").attr("src") || "";
+        const desc = $("#description").text().trim();
+
         return createManga({
             id: mangaId,
-            titles: [metadata.title],
-            image: `${komgaAPI}/series/${mangaId}/thumbnail`,
-            status: parseMangaStatus(metadata.status),
-            langFlag: metadata.language,
+            titles: [title],
+            image,
+            status: MangaStatus.UNKNOWN,
+            langFlag: LanguageCode.RUSSIAN,
             // Unused: langName
 
             artist: artists.join(", "),
             author: authors.join(", "),
 
-            desc: metadata.summary ? metadata.summary : booksMetadata.summary,
-            tags: tagSections,
-            lastUpdate: metadata.lastModified,
+            desc: desc.length === 0 ? undefined : desc,
+            tags: [tagSection],
+            // TODO: распарсить дату
+            // lastUpdate: metadata.lastModified,
+
+            views,
+            follows,
+            hentai: true,
         });
     }
 
@@ -333,7 +359,7 @@ export class Paperback extends Source {
                 In Komga a chapter is a `book`
                 */
 
-        const komgaAPI = await getKomgaAPI(this.stateManager);
+        const komgaAPI = await getHchanUrl(this.stateManager);
 
         const booksRequest = createRequestObject({
             url: `${komgaAPI}/series/${mangaId}/books`,
@@ -341,7 +367,10 @@ export class Paperback extends Source {
             method: "GET",
         });
 
-        const booksResponse = await this.requestManager.schedule(booksRequest, 1);
+        const booksResponse = await this.requestManager.schedule(
+            booksRequest,
+            1
+        );
         const booksResult =
             typeof booksResponse.data === "string"
                 ? JSON.parse(booksResponse.data)
@@ -354,7 +383,10 @@ export class Paperback extends Source {
             url: `${komgaAPI}/series/${mangaId}`,
             method: "GET",
         });
-        const serieResponse = await this.requestManager.schedule(serieRequest, 1);
+        const serieResponse = await this.requestManager.schedule(
+            serieRequest,
+            1
+        );
         const serieResult =
             typeof serieResponse.data === "string"
                 ? JSON.parse(serieResponse.data)
@@ -371,7 +403,7 @@ export class Paperback extends Source {
                     name: `${book.metadata.title} (${book.size})`,
                     time: new Date(book.fileLastModified),
                     // @ts-ignore
-                    sortingIndex: book.metadata.numberSort
+                    sortingIndex: book.metadata.numberSort,
                 })
             );
         }
@@ -383,7 +415,7 @@ export class Paperback extends Source {
         mangaId: string,
         chapterId: string
     ): Promise<ChapterDetails> {
-        const komgaAPI = await getKomgaAPI(this.stateManager);
+        const komgaAPI = await getHchanUrl(this.stateManager);
 
         const request = createRequestObject({
             url: `${komgaAPI}/books/${chapterId}/pages`,
@@ -397,7 +429,9 @@ export class Paperback extends Source {
         const pages: string[] = [];
         for (const page of result) {
             if (SUPPORTED_IMAGE_TYPES.includes(page.mediaType)) {
-                pages.push(`intercept*${komgaAPI}/books/${chapterId}/pages/${page.number}`);
+                pages.push(
+                    `intercept*${komgaAPI}/books/${chapterId}/pages/${page.number}`
+                );
             } else {
                 pages.push(
                     `intercept*${komgaAPI}/books/${chapterId}/pages/${page.number}?convert=png`
@@ -411,7 +445,10 @@ export class Paperback extends Source {
             method: "GET",
         });
 
-        const serieResponse = await this.requestManager.schedule(serieRequest, 1);
+        const serieResponse = await this.requestManager.schedule(
+            serieRequest,
+            1
+        );
         const serieResult =
             typeof serieResponse.data === "string"
                 ? JSON.parse(serieResponse.data)
@@ -419,7 +456,9 @@ export class Paperback extends Source {
 
         let longStrip = false;
         if (
-            ["VERTICAL", "WEBTOON"].includes(serieResult.metadata.readingDirection)
+            ["VERTICAL", "WEBTOON"].includes(
+                serieResult.metadata.readingDirection
+            )
         ) {
             longStrip = true;
         }
@@ -454,15 +493,18 @@ export class Paperback extends Source {
 
         // We won't use `await this.getKomgaAPI()` as we do not want to throw an error on
         // the homepage when server settings are not set
-        const komgaAPI = await getKomgaAPI(this.stateManager);
-        const { showOnDeck, showContinueReading } = await getOptions(this.stateManager);
+        const hchanUrl = await getHchanUrl(this.stateManager);
+        // const { showOnDeck, showContinueReading } = await getOptions(
+        //     this.stateManager
+        // );
 
-
-        if (komgaAPI === null) {
-            console.log("searchRequest failed because server settings are unset");
+        if (hchanUrl === null) {
+            console.log(
+                "searchRequest failed because server settings are unset"
+            );
             const section = createHomeSection({
                 id: "unset",
-                title: "Go to source settings to set your Komga server credentials.",
+                title: "Зеркало Хентай-тян не настроено",
                 view_more: false,
                 items: getServerUnavailableMangaTiles(),
             });
@@ -471,91 +513,84 @@ export class Paperback extends Source {
         }
 
         // The source define two homepage sections: new and latest
-        const sections = [];
-
-        if (showOnDeck) {
-            sections.push(createHomeSection({
-                id: 'ondeck',
-                title: 'On Deck',
-                view_more: false,
-            }));
-        }
-
-        if (showContinueReading) {
-            sections.push(createHomeSection({
-                id: 'continue',
-                title: 'Continue Reading',
-                view_more: false,
-            }));
-        }
-
-        sections.push(createHomeSection({
-            id: 'new',
-            title: 'Recently added series',
+        const newSection = createHomeSection({
+            id: "new",
+            title: "Новая манга",
             //type: showRecentFeatured ? HomeSectionType.featured : HomeSectionType.singleRowNormal,
-            view_more: true,
-        }));
-        sections.push(createHomeSection({
-            id: 'updated',
-            title: 'Recently updated series',
-            view_more: true,
-        }));
+            view_more: false,
+        });
+
         const promises: Promise<void>[] = [];
 
-        for (const section of sections) {
-            // Let the app load empty tagSections
-            sectionCallback(section);
+        // Let the app load empty tagSections
+        sectionCallback(newSection);
 
-            let apiPath: string, thumbPath: string, params: string, idProp: string;
-            switch (section.id) {
-                case 'ondeck':
-                    apiPath = `${komgaAPI}/books/${section.id}`;
-                    thumbPath = `${komgaAPI}/books`;
-                    params = '?page=0&size=20&deleted=false';
-                    idProp = 'seriesId';
-                    break;
-                case 'continue':
-                    apiPath = `${komgaAPI}/books`;
-                    thumbPath = `${komgaAPI}/books`;
-                    params = '?sort=readProgress.readDate,desc&read_status=IN_PROGRESS&page=0&size=20&deleted=false';
-                    idProp = 'seriesId';
-                    break;
-                default:
-                    apiPath = `${komgaAPI}/series/${section.id}`;
-                    thumbPath = `${komgaAPI}/series`;
-                    params = '?page=0&size=20&deleted=false';
-                    idProp = 'id';
-                    break;
-            }
+        const request = createRequestObject({
+            url: hchanUrl,
+            method: "GET",
+        });
 
-            const request = createRequestObject({
-                url: apiPath,
-                param: params,
-                method: "GET",
-            });
+        const tiles: MangaTile[] = [];
 
-            // Get the section data
-            promises.push(
-                this.requestManager.schedule(request, 1).then((data) => {
-                    const result =
-                        typeof data.data === "string" ? JSON.parse(data.data) : data.data;
+        // Get the section data
+        promises.push(
+            this.requestManager.schedule(request, 1).then((data) => {
+                const $ = this.cheerio.load(data.data);
 
-                    const tiles = [];
+                const newMangaEl = $("div.area_right")
+                    .toArray()
+                    .find((el) => {
+                        const title = $(
+                            "div.area_rightSpace > span > a",
+                            $(el)
+                        ).text();
 
-                    for (const serie of result.content) {
-                        tiles.push(
-                            createMangaTile({
-                                id: serie[idProp],
-                                title: createIconText({ text: serie.metadata.title }),
-                                image: `${thumbPath}/${serie.id}/thumbnail`,
-                            })
+                        return "Новая манга" === title;
+                    });
+
+                if (newMangaEl === undefined) {
+                    console.error("block with new manga not found");
+                    return;
+                }
+
+                const parsedManga = $(
+                    "ul.area_rightNews.linkStyle > a",
+                    newMangaEl
+                )
+                    .toArray()
+                    .map((el) => {
+                        const imgEl = $("img", el);
+
+                        const title = (el.attribs["title"] || "").trim();
+                        const mangaUrl = `https:${el.attribs["href"]}` || "";
+                        const previewUrl = imgEl.attr("src") || "";
+
+                        console.log(
+                            `Parsed: { ${title}, ${mangaUrl}, ${previewUrl}}`
                         );
-                    }
-                    section.items = tiles;
-                    sectionCallback(section);
-                })
-            );
-        }
+                        return { title, mangaUrl, previewUrl };
+                    });
+
+                for (const serie of parsedManga) {
+                    const { title, mangaUrl, previewUrl } = serie;
+
+                    // ".html" = -5
+                    const id = mangaUrl.split("/").pop()!!.slice(0, -5);
+
+                    tiles.push(
+                        createMangaTile({
+                            id: id,
+                            title: createIconText({
+                                text: title,
+                            }),
+                            image: previewUrl,
+                        })
+                    );
+                }
+                newSection.items = tiles;
+                sectionCallback(newSection);
+            })
+        );
 
         // Make sure the function completes
         await Promise.all(promises);
@@ -565,7 +600,7 @@ export class Paperback extends Source {
         homepageSectionId: string,
         metadata: any
     ): Promise<PagedResults> {
-        const komgaAPI = await getKomgaAPI(this.stateManager);
+        const komgaAPI = await getHchanUrl(this.stateManager);
         const page: number = metadata?.page ?? 0;
 
         const request = createRequestObject({
@@ -596,59 +631,5 @@ export class Paperback extends Source {
             results: tiles,
             metadata: metadata,
         });
-    }
-
-    override async filterUpdatedManga(
-        mangaUpdatesFoundCallback: (updates: MangaUpdates) => void,
-        time: Date,
-        ids: string[]
-    ): Promise<void> {
-        const komgaAPI = await getKomgaAPI(this.stateManager);
-
-        // We make requests of PAGE_SIZE titles to `series/updated/` until we got every titles
-        // or we got a title which `lastModified` metadata is older than `time`
-        let page = 0;
-        const foundIds: string[] = [];
-        let loadMore = true;
-
-        while (loadMore) {
-            const request = createRequestObject({
-                url: `${komgaAPI}/series/updated`,
-                param: `?page=${page}&size=${PAGE_SIZE}&deleted=false`,
-                method: "GET",
-            });
-
-            const data = await this.requestManager.schedule(request, 1);
-            const result =
-                typeof data.data === "string" ? JSON.parse(data.data) : data.data;
-
-            for (const serie of result.content) {
-                const serieUpdated = new Date(serie.metadata.lastModified);
-
-                if (serieUpdated >= time) {
-                    if (ids.includes(serie)) {
-                        foundIds.push(serie);
-                    }
-                } else {
-                    loadMore = false;
-                    break;
-                }
-            }
-
-            // If no series were returned we are on the last page
-            if (result.content.length === 0) {
-                loadMore = false;
-            }
-
-            page = page + 1;
-
-            if (foundIds.length > 0) {
-                mangaUpdatesFoundCallback(
-                    createMangaUpdates({
-                        ids: foundIds,
-                    })
-                );
-            }
-        }
     }
 }

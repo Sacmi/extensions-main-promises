@@ -4,12 +4,7 @@ import {
     RequestManager,
     SourceStateManager,
 } from "paperback-extensions-common";
-import {
-    retrieveStateData,
-    setStateData,
-    getKomgaAPI,
-    getAuthorizationString,
-} from "./Common";
+import { retrieveStateData, setStateData, getHchanUrl } from "./Common";
 
 /* Helper functions */
 
@@ -19,21 +14,19 @@ export const testServerSettings = async (
 ): Promise<string> => {
     // Try to establish a connection with the server. Return an human readable string containing the test result
 
-    const komgaAPI = await getKomgaAPI(stateManager)
-    const authorization = await getAuthorizationString(stateManager)
+    const hchanUrl = await getHchanUrl(stateManager);
 
     // We check credentials are set in server settings
-    if (komgaAPI === null || authorization === null) {
-        return "Impossible: Unset credentials in server settings";
+    if (hchanUrl === null) {
+        return "Impossible: Unset server settings";
     }
 
     // To test these information, we try to make a connection to the server
     // We could use a better endpoint to test the connection
     const request = createRequestObject({
-        url: `${komgaAPI}/libraries/`,
+        url: hchanUrl,
         method: "GET",
         incognito: true, // We don't want the authorization to be cached
-        headers: { authorization: authorization },
     });
 
     let responseStatus = undefined;
@@ -43,7 +36,7 @@ export const testServerSettings = async (
         responseStatus = response.status;
     } catch (error: any) {
         // If the server is unavailable error.message will be 'AsyncOperationTimedOutError'
-        return `Failed: Could not connect to server - ${error.message}`;
+        return `Failed: ping "${hchanUrl}" - ${error.message}`;
     }
 
     switch (responseStatus) {
@@ -68,7 +61,7 @@ export const serverSettingsMenu = (
     return createNavigationButton({
         id: "server_settings",
         value: "",
-        label: "Server Settings",
+        label: "Настройки сервера",
         form: createForm({
             onSubmit: async (values: any) => setStateData(stateManager, values),
             validate: async () => true,
@@ -78,65 +71,49 @@ export const serverSettingsMenu = (
                     header: undefined,
                     rows: async () => [
                         createMultilineLabel({
-                            label: "Demo Server",
-                            value: "Server URL: https://demo.komga.org\nUsername: demo@komga.org\nPassword: komga-demo\n\nNote: Values are case-sensitive.",
+                            label: "О настройках",
+                            value: "РКН может банить зеркала хентай-тян. Ниже можно изменить зеркало, чтобы получить доступ.",
                             id: "description",
                         }),
                     ],
                 }),
                 createSection({
                     id: "serverSettings",
-                    header: "Server Settings",
-                    footer: "Minimal Komga version: v0.100.0",
-                    rows: async () => retrieveStateData(stateManager).then((values) => [
-                        createInputField({
-                            id: "serverAddress",
-                            label: "Server URL",
-                            placeholder: "http://127.0.0.1:8080",
-                            value: values.serverURL,
-                            maskInput: false,
-                        }),
-                        createInputField({
-                            id: "serverUsername",
-                            label: "Email",
-                            placeholder: "demo@komga.org",
-                            value: values.serverUsername,
-                            maskInput: false,
-                        }),
-                        // TS-Ignoring because this isnt documented yet
-                        // Fallback to default input field if the app version doesnt support
-                        // SecureInputField
-                        // @ts-ignore
-                        (typeof createSecureInputField == 'undefined' ? createInputField : createSecureInputField)({
-                            id: "serverPassword",
-                            label: "Password",
-                            placeholder: "Some Super Secret Password",
-                            value: values.serverPassword
-                        }),
-                    ]),
+                    header: "Настройка зеркала",
+                    rows: async () =>
+                        retrieveStateData(stateManager).then((values) => [
+                            createInputField({
+                                id: "serverAddress",
+                                label: "URL",
+                                placeholder: "https://hentaichan.live",
+                                value: values.serverURL,
+                                maskInput: false,
+                            }),
+                        ]),
                 }),
-                createSection({
-                    id: "sourceOptions",
-                    header: "Source Options",
-                    footer: "",
-                    rows: async () => retrieveStateData(stateManager).then((values) => [
-                        createSwitch({
-                            id: 'showOnDeck',
-                            label: 'Show On Deck',
-                            value: values.showOnDeck,
-                        }),
-                        createSwitch({
-                            id: 'showContinueReading',
-                            label: 'Show Continue Reading',
-                            value: values.showContinueReading,
-                        }),
-                        createSwitch({
-                            id: 'orderResultsAlphabetically',
-                            label: 'Sort results alphabetically',
-                            value: values.orderResultsAlphabetically,
-                        }),
-                    ]),
-                }),
+                // createSection({
+                //     id: "sourceOptions",
+                //     header: "Source Options",
+                //     footer: "",
+                //     rows: async () =>
+                //         retrieveStateData(stateManager).then((values) => [
+                //             createSwitch({
+                //                 id: "showOnDeck",
+                //                 label: "Show On Deck",
+                //                 value: values.showOnDeck,
+                //             }),
+                //             createSwitch({
+                //                 id: "showContinueReading",
+                //                 label: "Show Continue Reading",
+                //                 value: values.showContinueReading,
+                //             }),
+                //             createSwitch({
+                //                 id: "orderResultsAlphabetically",
+                //                 label: "Sort results alphabetically",
+                //                 value: values.orderResultsAlphabetically,
+                //             }),
+                //         ]),
+                // }),
             ],
         }),
     });
@@ -149,21 +126,24 @@ export const testServerSettingsMenu = (
     return createNavigationButton({
         id: "test_settings",
         value: "",
-        label: "Try settings",
+        label: "Пингануть сервер",
         form: createForm({
-            onSubmit: async () => { },
+            onSubmit: async () => {},
             validate: async () => true,
             sections: async () => [
                 createSection({
                     id: "information",
                     header: "Connection to Komga server:",
-                    rows: () => testServerSettings(stateManager, requestManager).then(async (value) => [
-                        createLabel({
-                            label: value,
-                            value: "",
-                            id: "description",
-                        }),
-                    ]),
+                    rows: () =>
+                        testServerSettings(stateManager, requestManager).then(
+                            async (value) => [
+                                createLabel({
+                                    label: value,
+                                    value: "",
+                                    id: "description",
+                                }),
+                            ]
+                        ),
                 }),
             ],
         }),
@@ -175,7 +155,7 @@ export const resetSettingsButton = (
 ): Button => {
     return createButton({
         id: "reset",
-        label: "Reset to Default",
+        label: "Сбросить настройки",
         value: "",
         onTap: () => setStateData(stateManager, {}),
     });
